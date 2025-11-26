@@ -25,55 +25,102 @@ const STATUS_SOURCES = {
 // Status Fetchers
 // ============================================================================
 
-async function fetchJsonSummaryStatus(source) {
-  try {
-    const response = await fetch(source.url);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    
-    const data = await response.json();
-    
-    // Get active incidents (non-resolved)
-    const activeIncidents = (data.incidents || [])
-      .filter(inc => inc.status !== 'resolved' && inc.status !== 'postmortem')
-      .map(inc => ({
-        name: inc.name,
-        status: inc.status,
-        impact: inc.impact,
-        updatedAt: inc.updated_at,
-        shortlink: inc.shortlink
-      }));
-    
-    // Also check for degraded components if no active incidents
-    // This catches cases where status is "minor" but incidents list is empty
-    const degradedComponents = (data.components || [])
-      .filter(comp => comp.status !== 'operational')
-      .map(comp => ({
-        name: `${comp.name}: ${comp.status.replace('_', ' ')}`,
-        status: comp.status,
-        impact: 'minor',
-        updatedAt: comp.updated_at,
-        shortlink: null
-      }));
-    
-    // Combine incidents and degraded components
-    const allIssues = activeIncidents.length > 0 ? activeIncidents : degradedComponents;
-    
-    return {
-      name: source.name,
-      status: data.status.indicator,
-      description: data.status.description,
-      url: data.page.url,
-      incidents: allIssues
-    };
-  } catch (error) {
-    return {
+// Priority order for status severity (higher = more severe)
+const STATUS_PRIORITY = {
+  'major_outage': 4,
+  'partial_outage': 3,
+  'degraded_performance': 2,
+  'under_maintenance': 1,
+  'operational': 0
+};
+
+// Format timestamp as relative time (e.g., "2h ago", "yesterday", "3d ago")
+function formatRelativeTime(dateStr) {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  
+  if (diffMins < 1) return 'now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays === 1) return 'yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function fetchJsonSummaryStatus(source) {
+  return fetch(source.url)
+    .then(response => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })
+    .then(data => {
+      // Get active incidents (non-resolved)
+      // Sort by: 1) severity (major > partial > maintenance), 2) most recent
+      const activeIncidents = (data.incidents || [])
+        .filter(inc => inc.status !== 'resolved' && inc.status !== 'postmortem')
+        .sort((a, b) => {
+          // First by impact severity
+          const impactOrder = { major: 3, minor: 2, none: 1 };
+          const impactDiff = (impactOrder[b.impact] || 0) - (impactOrder[a.impact] || 0);
+          if (impactDiff !== 0) return impactDiff;
+          // Then by most recent update
+          return new Date(b.updated_at) - new Date(a.updated_at);
+        })
+        .slice(0, 1)
+        .map(inc => ({ name: inc.name, status: inc.status, updatedAt: inc.updated_at }));
+      
+      // Check degraded components if no active incidents
+      let degradedComponents = [];
+      if (activeIncidents.length === 0) {
+        const degraded = (data.components || [])
+          .filter(comp => comp.status !== 'operational')
+          // Sort by severity, then recency
+          .sort((a, b) => {
+            const priorityDiff = (STATUS_PRIORITY[b.status] || 0) - (STATUS_PRIORITY[a.status] || 0);
+            if (priorityDiff !== 0) return priorityDiff;
+            return new Date(b.updated_at) - new Date(a.updated_at);
+          });
+        
+        if (degraded.length > 0) {
+          const mostSevere = degraded[0];
+          let summary = mostSevere.name;
+          
+          // Add counts if there are more issues
+          const totalOther = degraded.length - 1;
+          if (totalOther > 0) {
+            summary += ` (+${totalOther} more)`;
+          }
+          
+          degradedComponents = [{ 
+            name: summary, 
+            status: mostSevere.status,
+            updatedAt: mostSevere.updated_at
+          }];
+        }
+      }
+      
+      const allIssues = activeIncidents.length > 0 ? activeIncidents : degradedComponents;
+      
+      return {
+        name: source.name,
+        status: data.status.indicator,
+        description: data.status.description,
+        url: data.page.url,
+        incidents: allIssues
+      };
+    })
+    .catch(error => ({
       name: source.name,
       status: 'error',
       description: `Failed to fetch: ${error.message}`,
       url: source.url,
       incidents: []
-    };
-  }
+    }));
 }
 
 async function fetchFastlyStatus(source) {
@@ -165,13 +212,17 @@ async function fetchFastlyStatus(source) {
         statusDescription = 'Active Incident';
       }
     }
+    // Get most recent incident for display
+    const mostRecent = activeIncidents.length > 0 
+      ? { name: activeIncidents[0].title, updatedAt: activeIncidents[0].pubDate?.toISOString() }
+      : null;
     
     return {
       name: source.name,
       status: status,
       description: statusDescription,
       url: 'https://www.fastlystatus.com',
-      incidents: []
+      incidents: mostRecent ? [mostRecent] : []
     };
   } catch (error) {
     return {
@@ -347,50 +398,29 @@ function getEmphasisLevel(status) {
 /**
  * Generate just the markup content for TRMNL webhook
  * This is the HTML that goes inside the TRMNL framework
+ * Note: Markup is minified to stay under 2kb limit
  */
 function renderTrmnlMarkup(data) {
   const providersHtml = data.providers.map(provider => {
-    const emphasisLevel = getEmphasisLevel(provider.status);
-    
-    // Get incident details - show more text for active incidents
+    const e = getEmphasisLevel(provider.status);
+    const icon = getStatusIcon(provider.status);
+    const incident = provider.incidents?.[0];
     let incidentHtml = '';
-    if (provider.incidents && provider.incidents.length > 0) {
-      const incident = provider.incidents[0];
-      incidentHtml = `
-        <div class="flex gap--small mt--small">
-          <span class="label label--small label--underline">${incident.name}</span>
-        </div>`;
+    if (incident?.name) {
+      const timeAgo = incident.updatedAt ? ` (${formatRelativeTime(incident.updatedAt)})` : '';
+      incidentHtml = `<span class="label label--underline">${incident.name}${timeAgo}</span>`;
     }
     
-    return `
-      <div class="item item--emphasis-${emphasisLevel}">
-        <div class="meta">
-          <span class="index index--large">${getStatusIcon(provider.status)}</span>
-        </div>
-        <div class="content">
-          <span class="title">${provider.name}</span>
-          <span class="description description--large">${provider.description}</span>
-          ${incidentHtml}
-        </div>
-      </div>`;
+    return `<div class="item item--emphasis-${e}"><div class="meta"><span class="index">${icon}</span></div><div class="content"><span class="title">${provider.name}</span><span class="description">${provider.description}</span>${incidentHtml}</div></div>`;
   }).join('');
 
   const updatedAt = new Date(data.timestamp).toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZoneName: 'short'
+    hour: 'numeric',
+    minute: '2-digit'
   });
 
-  // Return just the markup for the webhook (TRMNL wraps this in their framework)
-  return `
-<div class="layout layout--col layout--stretch gap--medium">
-  ${providersHtml}
-</div>
-
-<div class="title_bar">
-  <span class="title">CDN Status</span>
-  <span class="instance">${updatedAt}</span>
-</div>`;
+  // Minified markup to stay under 2kb
+  return `<div class="layout layout--col gap--medium">${providersHtml}</div><div class="title_bar"><span class="title">CDN Status</span><span class="instance">${updatedAt}</span></div>`;
 }
 
 /**
@@ -399,11 +429,15 @@ function renderTrmnlMarkup(data) {
 function renderTrmnlPlugin(data) {
   const providersHtml = data.providers.map(provider => {
     const emphasisLevel = getEmphasisLevel(provider.status);
-    const incidentText = provider.incidents && provider.incidents.length > 0
-      ? provider.incidents[0].name.length > 50 
-        ? provider.incidents[0].name.substring(0, 47) + '...' 
-        : provider.incidents[0].name
-      : '';
+    const incident = provider.incidents?.[0];
+    let incidentText = '';
+    if (incident?.name) {
+      const name = incident.name.length > 40 
+        ? incident.name.substring(0, 37) + '...' 
+        : incident.name;
+      const timeAgo = incident.updatedAt ? ` (${formatRelativeTime(incident.updatedAt)})` : '';
+      incidentText = name + timeAgo;
+    }
     
     return `
       <div class="item item--emphasis-${emphasisLevel}">
