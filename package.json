@@ -1,0 +1,13 @@
+{
+  "name": "cdn-status-trmnl",
+  "version": "1.0.0",
+  "description": "TRMNL plugin showing CDN status from Cloudflare, Fastly, and Akamai",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}
