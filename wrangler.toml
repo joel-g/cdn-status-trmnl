@@ -2,6 +2,19 @@ name = "cdn-status-trmnl"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
+# Cron trigger - runs every 5 minutes to check for status changes
+[triggers]
+crons = ["*/5 * * * *"]
+
+# KV namespace for storing last known status
+[[kv_namespaces]]
+binding = "CDN_STATUS_KV"
+id = "YOUR_KV_NAMESPACE_ID"  # Replace after running: npx wrangler kv:namespace create CDN_STATUS_KV
+
+# Environment variables (set via wrangler secret)
+# Run: npx wrangler secret put TRMNL_PLUGIN_UUID
+# Run: npx wrangler secret put TRMNL_WEBHOOK_KEY (optional, for authentication)
+
 # Uncomment to use a custom domain
 # routes = [
 #   { pattern = "cdn-status.yourdomain.com", custom_domain = true }

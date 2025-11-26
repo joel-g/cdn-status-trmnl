@@ -34,7 +34,7 @@ async function fetchJsonSummaryStatus(source) {
     
     // Get active incidents (non-resolved)
     const activeIncidents = (data.incidents || [])
-      .filter(inc => inc.status !== 'resolved')
+      .filter(inc => inc.status !== 'resolved' && inc.status !== 'postmortem')
       .map(inc => ({
         name: inc.name,
         status: inc.status,
@@ -43,12 +43,27 @@ async function fetchJsonSummaryStatus(source) {
         shortlink: inc.shortlink
       }));
     
+    // Also check for degraded components if no active incidents
+    // This catches cases where status is "minor" but incidents list is empty
+    const degradedComponents = (data.components || [])
+      .filter(comp => comp.status !== 'operational')
+      .map(comp => ({
+        name: `${comp.name}: ${comp.status.replace('_', ' ')}`,
+        status: comp.status,
+        impact: 'minor',
+        updatedAt: comp.updated_at,
+        shortlink: null
+      }));
+    
+    // Combine incidents and degraded components
+    const allIssues = activeIncidents.length > 0 ? activeIncidents : degradedComponents;
+    
     return {
       name: source.name,
       status: data.status.indicator,
       description: data.status.description,
       url: data.page.url,
-      incidents: activeIncidents
+      incidents: allIssues
     };
   } catch (error) {
     return {
@@ -183,6 +198,88 @@ async function fetchAllStatuses() {
 }
 
 // ============================================================================
+// TRMNL Webhook
+// ============================================================================
+
+const TRMNL_WEBHOOK_BASE_URL = 'https://usetrmnl.com/api/custom_plugins';
+const KV_STATUS_KEY = 'last_status';
+
+/**
+ * Generate a hash of the status data to detect changes
+ * Only considers status and active incidents, not timestamps
+ */
+function generateStatusHash(data) {
+  const relevantData = data.providers.map(p => ({
+    name: p.name,
+    status: p.status,
+    description: p.description,
+    incidentCount: p.incidents?.length || 0,
+    incidentNames: p.incidents?.map(i => i.name).sort() || []
+  }));
+  return JSON.stringify(relevantData);
+}
+
+/**
+ * Check if status has changed compared to stored state
+ */
+async function hasStatusChanged(env, currentData) {
+  try {
+    const lastHash = await env.CDN_STATUS_KV.get(KV_STATUS_KEY);
+    const currentHash = generateStatusHash(currentData);
+    
+    if (lastHash !== currentHash) {
+      // Store new hash
+      await env.CDN_STATUS_KV.put(KV_STATUS_KEY, currentHash);
+      return { changed: true, isFirstRun: lastHash === null };
+    }
+    
+    return { changed: false, isFirstRun: false };
+  } catch (error) {
+    console.error('Error checking status change:', error);
+    return { changed: true, isFirstRun: true }; // Assume changed on error
+  }
+}
+
+/**
+ * Send markup to TRMNL via webhook
+ */
+async function sendToTrmnlWebhook(env, markup) {
+  const pluginUuid = env.TRMNL_PLUGIN_UUID;
+  
+  if (!pluginUuid) {
+    console.error('TRMNL_PLUGIN_UUID not configured');
+    return { success: false, error: 'Missing plugin UUID' };
+  }
+  
+  const webhookUrl = `${TRMNL_WEBHOOK_BASE_URL}/${pluginUuid}`;
+  
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        merge_variables: { markup: markup }
+      })
+    });
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('TRMNL webhook error:', response.status, errorText);
+      return { success: false, error: `HTTP ${response.status}: ${errorText}` };
+    }
+    
+    const result = await response.json();
+    console.log('TRMNL webhook success:', result);
+    return { success: true, result };
+  } catch (error) {
+    console.error('TRMNL webhook exception:', error);
+    return { success: false, error: error.message };
+  }
+}
+
+// ============================================================================
 // Caching
 // ============================================================================
 
@@ -247,6 +344,58 @@ function getEmphasisLevel(status) {
   }
 }
 
+/**
+ * Generate just the markup content for TRMNL webhook
+ * This is the HTML that goes inside the TRMNL framework
+ */
+function renderTrmnlMarkup(data) {
+  const providersHtml = data.providers.map(provider => {
+    const emphasisLevel = getEmphasisLevel(provider.status);
+    
+    // Get incident details - show more text for active incidents
+    let incidentHtml = '';
+    if (provider.incidents && provider.incidents.length > 0) {
+      const incident = provider.incidents[0];
+      incidentHtml = `
+        <div class="flex gap--small mt--small">
+          <span class="label label--small label--underline">${incident.name}</span>
+        </div>`;
+    }
+    
+    return `
+      <div class="item item--emphasis-${emphasisLevel}">
+        <div class="meta">
+          <span class="index index--large">${getStatusIcon(provider.status)}</span>
+        </div>
+        <div class="content">
+          <span class="title">${provider.name}</span>
+          <span class="description description--large">${provider.description}</span>
+          ${incidentHtml}
+        </div>
+      </div>`;
+  }).join('');
+
+  const updatedAt = new Date(data.timestamp).toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short'
+  });
+
+  // Return just the markup for the webhook (TRMNL wraps this in their framework)
+  return `
+<div class="layout layout--col layout--stretch gap--medium">
+  ${providersHtml}
+</div>
+
+<div class="title_bar">
+  <span class="title">CDN Status</span>
+  <span class="instance">${updatedAt}</span>
+</div>`;
+}
+
+/**
+ * Generate full HTML document for preview/testing
+ */
 function renderTrmnlPlugin(data) {
   const providersHtml = data.providers.map(provider => {
     const emphasisLevel = getEmphasisLevel(provider.status);
@@ -463,8 +612,29 @@ export default {
       return new Response(JSON.stringify({
         status: 'ok',
         service: 'cdn-status-trmnl',
-        endpoints: ['/trmnl/plugin', '/api/status', '/preview']
+        endpoints: ['/trmnl/plugin', '/api/status', '/preview', '/trigger']
       }), {
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    
+    // Manual trigger endpoint (for testing)
+    if (path === '/trigger') {
+      const data = await fetchAllStatuses();
+      const markup = renderTrmnlMarkup(data);
+      const result = await sendToTrmnlWebhook(env, markup);
+      
+      // Also update KV with current hash
+      if (env.CDN_STATUS_KV) {
+        const hash = generateStatusHash(data);
+        await env.CDN_STATUS_KV.put(KV_STATUS_KEY, hash);
+      }
+      
+      return new Response(JSON.stringify({
+        triggered: true,
+        webhookResult: result,
+        data: data
+      }, null, 2), {
         headers: { 'Content-Type': 'application/json' }
       });
     }
@@ -512,7 +682,7 @@ export default {
       });
     }
     
-    // TRMNL plugin endpoint
+    // TRMNL plugin endpoint (returns full HTML for preview/testing)
     if (path === '/trmnl/plugin') {
       const skipCache = url.searchParams.has('nocache') || url.searchParams.has('fresh');
       
@@ -534,5 +704,39 @@ export default {
 
     // 404
     return new Response('Not Found', { status: 404 });
+  },
+
+  // ============================================================================
+  // Scheduled Handler (Cron)
+  // ============================================================================
+  
+  async scheduled(event, env, ctx) {
+    console.log('Cron triggered at:', new Date().toISOString());
+    
+    try {
+      // Fetch current status from all providers
+      const data = await fetchAllStatuses();
+      
+      // Check if status has changed
+      const { changed, isFirstRun } = await hasStatusChanged(env, data);
+      
+      if (changed) {
+        console.log(isFirstRun ? 'First run - sending initial status' : 'Status changed - sending update');
+        
+        // Generate markup and send to TRMNL
+        const markup = renderTrmnlMarkup(data);
+        const result = await sendToTrmnlWebhook(env, markup);
+        
+        if (result.success) {
+          console.log('Successfully sent update to TRMNL');
+        } else {
+          console.error('Failed to send update:', result.error);
+        }
+      } else {
+        console.log('No status change detected - skipping webhook');
+      }
+    } catch (error) {
+      console.error('Scheduled handler error:', error);
+    }
   }
 };
