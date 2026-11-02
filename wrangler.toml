@@ -1,21 +1,35 @@
 name = "cdn-status-trmnl"
 main = "src/index.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2026-10-01"
 
-# Cron trigger - runs every 5 minutes to check for status changes
+# Bundle the Liquid templates as strings so /preview renders exactly what TRMNL renders.
+[[rules]]
+type = "Text"
+globs = ["**/*.liquid"]
+fallthrough = true
+
+# Check every 5 minutes. A webhook is only sent when the status changes, or as a
+# heartbeat (HEARTBEAT_MINUTES) so the "checked at" time and relative ages stay fresh.
 [triggers]
 crons = ["*/5 * * * *"]
 
-# KV namespace for storing last known status
+# Stores the last pushed status hash and push time.
 [[kv_namespaces]]
 binding = "CDN_STATUS_KV"
-id = "YOUR_KV_NAMESPACE_ID"  # Replace after running: npx wrangler kv:namespace create CDN_STATUS_KV
+id = "YOUR_KV_NAMESPACE_ID"
 
-# Environment variables (set via wrangler secret)
-# Run: npx wrangler secret put TRMNL_PLUGIN_UUID
-# Run: npx wrangler secret put TRMNL_WEBHOOK_KEY (optional, for authentication)
+[vars]
+# IANA timezone for the "checked at" footer time.
+TIMEZONE = "America/Chicago"
+# Force a push at least this often, even with no status change.
+HEARTBEAT_MINUTES = "30"
+# TRMNL webhook payload limit: 2kb standard, 5kb for TRMNL+.
+TRMNL_MAX_PAYLOAD_BYTES = "2000"
 
-# Uncomment to use a custom domain
+# Secrets (set with `npx wrangler secret put <NAME>`):
+#   TRMNL_PLUGIN_UUID  - private plugin UUID (required)
+#   TRIGGER_TOKEN      - bearer token for POST /trigger (endpoint disabled if unset)
+
 # routes = [
 #   { pattern = "cdn-status.yourdomain.com", custom_domain = true }
 # ]

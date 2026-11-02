@@ -1,0 +1,60 @@
+{%- comment -%}
+  CDN Status - Half vertical (400x480). Paste into TRMNL: Private Plugin > Edit Markup > Half Vertical.
+  See full.liquid for the merge variable reference.
+{%- endcomment -%}
+{%- assign now = "now" | date: "%s" | plus: 0 -%}
+<style>
+  .cdn { display: flex; flex-direction: column; gap: 10px; width: 100%; height: 100%; }
+  .cdn-row { flex: 1; display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: hidden; }
+  .cdn-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+              border: 2px solid #000; border-radius: 6px; padding: 3px 10px; }
+  .cdn-head--major { background: #000; }
+  .cdn-head--major * { color: #fff !important; }
+  .cdn-head--minor, .cdn-head--error { border-width: 4px; padding: 1px 8px; }
+  .cdn-head--maint { border-style: dashed; }
+  .cdn-list { flex: 1; min-height: 0; display: flex; flex-direction: column; flex-wrap: wrap; align-content: flex-start;
+              row-gap: 5px; column-gap: 100px; overflow: hidden; }
+  .cdn-item { width: 100%; display: flex; flex-direction: column; border-left: 5px solid #000; padding-left: 8px; }
+  .cdn-item--minor { border-left-width: 3px; }
+  .cdn-item--maint { border-left: 3px dashed #000; }
+  .cdn-item--info { border-left: 2px dotted #000; }
+  .cdn-c1 { display: -webkit-box !important; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; word-break: break-word; }
+  .cdn-desc { min-width: 0; text-align: right; }
+  .cdn-clear { padding-left: 10px; }
+</style>
+<div class="layout layout--col layout--top layout--stretch" style="justify-content: flex-start; align-items: stretch;">
+  <div class="cdn">
+    {%- for p in providers %}
+    {%- assign total = p.items.size | plus: p.more %}
+    <div class="cdn-row">
+      <div class="cdn-head cdn-head--{{ p.status }}">
+        <span class="title title--small">{{ p.name | escape }}</span>
+        <span class="label label--small cdn-desc cdn-c1">{{ p.desc | escape }}{% if total > 0 %} · {{ total }}{% endif %}</span>
+      </div>
+      {%- if p.items.size > 0 %}
+      <div class="cdn-list">
+        {%- for item in p.items %}
+        {%- assign age = now | minus: item.u -%}
+        {%- capture when -%}
+          {%- if item.u == 0 -%}
+          {%- elsif age < 3600 -%}{%- assign mins = age | divided_by: 60 | floor -%}{%- if mins < 1 -%}now{%- else -%}{{ mins }}m ago{%- endif -%}
+          {%- elsif age < 86400 -%}{{ age | divided_by: 3600 | floor }}h ago
+          {%- else -%}{{ age | divided_by: 86400 | floor }}d ago{%- endif -%}
+        {%- endcapture %}
+        <div class="cdn-item cdn-item--{{ item.k }}">
+          <span class="label cdn-c1">{{ item.t | escape }}</span>
+          <span class="description cdn-c1">{{ when }}{% if when != blank and item.m != blank %} · {% endif %}{{ item.m | escape }}</span>
+        </div>
+        {%- endfor %}
+      </div>
+      {%- else %}
+      <span class="description cdn-clear">{% if p.status == "error" %}No data{% else %}No active incidents{% endif %}</span>
+      {%- endif %}
+    </div>
+    {%- endfor %}
+  </div>
+</div>
+<div class="title_bar">
+  <span class="title">CDN Status</span>
+  <span class="instance">Checked {{ checked_at }}</span>
+</div>

@@ -1,0 +1,71 @@
+{%- comment -%}
+  CDN Status - Full (800x480). Paste into TRMNL: Private Plugin > Edit Markup > Full.
+  Merge variables (pushed by the worker):
+    providers[]: name, status (ok|minor|major|maint|error), desc, more (items not sent),
+                 items[]: t (title), m (detail), k (severity), u (epoch seconds)
+    checked_at:  local time of the last check
+  Typography uses framework classes so the device gets its crisp bitmap fonts;
+  the <style> block only handles layout and severity borders.
+  Lists show as many whole items as fit: overflow wraps into a hidden second column.
+{%- endcomment -%}
+{%- assign now = "now" | date: "%s" | plus: 0 -%}
+<style>
+  .cdn { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; width: 100%; height: 100%; }
+  .cdn-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; overflow: hidden; }
+  .cdn-head { display: flex; flex-direction: column; gap: 2px; border: 2px solid #000; border-radius: 8px; padding: 8px 12px; }
+  .cdn-head--major { background: #000; }
+  .cdn-head--major * { color: #fff !important; }
+  .cdn-head--minor, .cdn-head--error { border-width: 5px; padding: 5px 9px; }
+  .cdn-head--maint { border-style: dashed; border-width: 3px; padding: 7px 11px; }
+  .cdn-name { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+  .cdn-list { flex: 1; min-height: 0; display: flex; flex-direction: column; flex-wrap: wrap; align-content: flex-start;
+              row-gap: 12px; column-gap: 100px; overflow: hidden; }
+  .cdn-item { width: 100%; display: flex; flex-direction: column; gap: 3px; border-left: 6px solid #000; padding: 1px 0 1px 9px; }
+  .cdn-item--minor { border-left-width: 4px; }
+  .cdn-item--maint { border-left: 3px dashed #000; }
+  .cdn-item--info { border-left: 2px dotted #000; }
+  .cdn-c2, .cdn-c3 { display: -webkit-box !important; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+  .cdn-c2 { -webkit-line-clamp: 2; }
+  .cdn-c3 { -webkit-line-clamp: 3; }
+  .cdn-clear { flex: 1; display: flex; align-items: center; justify-content: center; text-align: center;
+               border: 2px dashed #000; border-radius: 8px; }
+</style>
+<div class="layout layout--col layout--top layout--stretch" style="justify-content: flex-start; align-items: stretch;">
+  <div class="cdn">
+    {%- for p in providers %}
+    {%- assign total = p.items.size | plus: p.more %}
+    <div class="cdn-col">
+      <div class="cdn-head cdn-head--{{ p.status }}">
+        <div class="cdn-name">
+          <span class="title">{{ p.name | escape }}</span>
+          {%- if total > 0 %}<span class="label label--small">{{ total }} active</span>{% endif %}
+        </div>
+        <span class="label cdn-c2">{{ p.desc | escape }}</span>
+      </div>
+      {%- if p.items.size > 0 %}
+      <div class="cdn-list">
+        {%- for item in p.items %}
+        {%- assign age = now | minus: item.u -%}
+        {%- capture when -%}
+          {%- if item.u == 0 -%}
+          {%- elsif age < 3600 -%}{%- assign mins = age | divided_by: 60 | floor -%}{%- if mins < 1 -%}now{%- else -%}{{ mins }}m ago{%- endif -%}
+          {%- elsif age < 86400 -%}{{ age | divided_by: 3600 | floor }}h ago
+          {%- else -%}{{ age | divided_by: 86400 | floor }}d ago{%- endif -%}
+        {%- endcapture %}
+        <div class="cdn-item cdn-item--{{ item.k }}">
+          <span class="title title--small cdn-c2">{{ item.t | escape }}</span>
+          <span class="description cdn-c3">{{ when }}{% if when != blank and item.m != blank %} · {% endif %}{{ item.m | escape }}</span>
+        </div>
+        {%- endfor %}
+      </div>
+      {%- else %}
+      <div class="cdn-clear"><span class="title title--small">{% if p.status == "error" %}No data{% else %}No active incidents{% endif %}</span></div>
+      {%- endif %}
+    </div>
+    {%- endfor %}
+  </div>
+</div>
+<div class="title_bar">
+  <span class="title">CDN Status</span>
+  <span class="instance">Checked {{ checked_at }}</span>
+</div>
