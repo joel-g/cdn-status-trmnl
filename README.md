@@ -86,12 +86,15 @@ Fastly's page status comes from `Status` / `StatusText`. Incident lifecycle and 
 Requires Node 22+ (`nvm use`).
 
 ```bash
-npm install
+npm ci
+cp wrangler.toml.example wrangler.toml       # local deployment config, ignored by git
+cp .env.example .env.local                  # local credentials and deployment URLs
 npx wrangler login
+npx wrangler whoami                            # choose your Cloudflare account
 npx wrangler kv namespace create CDN_STATUS_KV   # put the id in wrangler.toml
 npx wrangler secret put TRMNL_PLUGIN_UUID        # from the TRMNL private plugin
 npx wrangler secret put TRIGGER_TOKEN            # optional, enables POST /trigger
-# Configure .env.local as described below before the combined deployment.
+# Set your worker name in wrangler.toml and configure .env.local as described below.
 npm run deploy
 ```
 
@@ -99,7 +102,7 @@ npm run deploy
 
 1. Use your existing private plugin, or create one with strategy **Webhook**. Its UUID must match the worker's `TRMNL_PLUGIN_UUID` secret.
 2. Create an [account API key](https://trmnl.com/account/developer/edit) with **Read** and **Content** capabilities, restricted to this plugin. This is separate from the webhook UUID and device API key.
-3. Copy `.env.example` to `.env.local` (ignored by git). Set `TRMNL_API_KEY` and `TRMNL_PLUGIN_SETTING_ID` (numeric settings ID from the plugin URL, or its UUID). The example includes this project's worker URL and Cloudflare account; change both for another installation. Environment variables take precedence over `.env.local`.
+3. Copy `.env.example` to `.env.local` (ignored by git). Set `TRMNL_API_KEY`, `TRMNL_PLUGIN_SETTING_ID` (numeric settings ID from the plugin URL, or its UUID), and `TRMNL_WORKER_URL` (your worker's production URL). Set `CLOUDFLARE_ACCOUNT_ID` to your own account ID when needed. No production account or worker URL is supplied by this repository. Environment variables take precedence over `.env.local`.
 4. Run `npm run deploy`. It reads and backs up the existing four layouts, deploys the worker, uploads and reads back each template, sends the deployed worker's current payload, and requests a screen render. Devices pick up the result on their next scheduled refresh.
 
 ```bash
@@ -109,7 +112,9 @@ npm run deploy:templates   # templates + fresh data from the existing worker + r
 npm run deploy:worker      # only the worker (uses Wrangler's normal environment/config)
 ```
 
-The combined deployment loads `.env.local` before running Wrangler, so its `CLOUDFLARE_ACCOUNT_ID` selects the correct account. `deploy:worker` invokes Wrangler directly; if you belong to multiple accounts, export `CLOUDFLARE_ACCOUNT_ID` first.
+The combined deployment loads `.env.local` before running Wrangler, so its `CLOUDFLARE_ACCOUNT_ID` selects the correct account. Standalone Wrangler commands, including login/setup commands and `deploy:worker`, use Wrangler's normal configuration; if you belong to multiple accounts, export your `CLOUDFLARE_ACCOUNT_ID` in the shell first. On a first deployment, run `npm run deploy:worker` to obtain your worker URL, set it in `.env.local`, then run `npm run deploy:templates`.
+
+`wrangler.toml.example` is the tracked configuration template. Copy it to the ignored `wrangler.toml`, choose your worker name, and replace `YOUR_KV_NAMESPACE_ID` with the namespace ID from your account. Keep account IDs, real deployment URLs and credentials in these ignored local files or CI configuration. Do not force-add them to git.
 
 To reuse credentials from `~/.secrets`, set `TRMNL_SECRETS_FILE=~/.secrets` in `.env.local` instead of copying the key and plugin ID. The deploy script reads only `TRMNL_API_KEY` and `TRMNL_PLUGIN_SETTING_ID` from that file, accepting dotenv assignments with optional `export`. It does not execute shell commands or expand shell expressions. Nonempty values already supplied in the environment or `.env.local` take precedence.
 

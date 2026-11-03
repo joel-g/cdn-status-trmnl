@@ -46,7 +46,8 @@ function fixture({ failLayout, mismatchLayout } = {}) {
 test('deployment requires separate account credentials and a valid worker URL', () => {
   assert.throws(() => readConfig({}), /TRMNL_API_KEY/);
   const env = { TRMNL_API_KEY: 'key', TRMNL_PLUGIN_SETTING_ID: '123' };
-  assert.equal(readConfig(env).pluginId, '123');
+  assert.throws(() => readConfig(env), /TRMNL_WORKER_URL/);
+  assert.equal(readConfig({ ...env, TRMNL_WORKER_URL: 'https://worker.example' }).pluginId, '123');
   assert.throws(() => readConfig({ ...env, TRMNL_WORKER_URL: 'http://worker.example' }), /HTTPS/);
 });
 

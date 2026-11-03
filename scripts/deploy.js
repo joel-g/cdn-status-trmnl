@@ -23,7 +23,10 @@ export function readConfig(env) {
   if (!env.TRMNL_API_KEY?.trim() || !env.TRMNL_PLUGIN_SETTING_ID?.trim()) {
     throw new Error('Set TRMNL_API_KEY and TRMNL_PLUGIN_SETTING_ID in .env.local or the environment. See README.md.');
   }
-  const workerUrl = new URL(env.TRMNL_WORKER_URL || 'https://your-worker.your-subdomain.workers.dev');
+  if (!env.TRMNL_WORKER_URL?.trim()) {
+    throw new Error('Set TRMNL_WORKER_URL to your deployed worker URL in .env.local or the environment.');
+  }
+  const workerUrl = new URL(env.TRMNL_WORKER_URL.trim());
   if (workerUrl.protocol !== 'https:' || workerUrl.username || workerUrl.password || workerUrl.search || workerUrl.hash) {
     throw new Error('TRMNL_WORKER_URL must be an HTTPS URL without credentials, query parameters or a fragment.');
   }
