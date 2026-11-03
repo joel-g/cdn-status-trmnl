@@ -1,86 +1,96 @@
-// Parser for Fastly's StatusCast RSS feed.
-// Each <item> is one *update*; items sharing a <link> belong to the same incident.
+// Fastly's StatusCast /summary.json API. Status fields drive classification;
+// HTML in post bodies is used only for a short, plain-text description.
 
-import { compareItems, decodeEntities, htmlToText, rank, truncate } from '../util.js';
+import { compareItems, htmlToText, truncate } from '../util.js';
 
-const DEFAULT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
+export const FASTLY_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
-const RESOLVED_TEXT = /has been resolved|has been completed|has been cancel+ed|fully restored|has (?:now )?recovered|during this incident/i;
-
-const STATUS_DESCRIPTION = {
-  major: 'Major Outage',
-  minor: 'Active Incident',
-  maint: 'Maintenance In Progress',
-  ok: 'All Systems Operational'
+const COMPONENT_STATUS = {
+  Available: 'ok',
+  Unavailable: 'major',
+  DegradedPerformance: 'minor',
+  Maintenance: 'maint',
+  Informational: 'info',
+  Investigating: 'minor',
+  Identified: 'minor',
+  Monitoring: 'minor'
 };
+const INCIDENT_SEVERITY = { ScheduledMaintenance: 'maint', ServiceUnavailable: 'minor', Informational: 'info' };
+const DESCRIPTION = {
+  ok: 'All Systems Operational', major: 'Major Outage', minor: 'Active Incident',
+  maint: 'Maintenance', info: 'Informational'
+};
+const POST_LABEL = { Investigating: 'Investigating', Identified: 'Identified', Monitoring: 'Monitoring' };
 
-function tag(xml, name) {
-  const match = xml.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`));
-  return match ? match[1].trim() : '';
+function invalid(field) {
+  throw new Error(`Invalid Fastly summary: ${field}`);
 }
 
-export function parseRssItems(xml) {
-  return [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map(([, item]) => {
-    const pubDate = Date.parse(tag(item, 'pubDate'));
-    return {
-      title: htmlToText(tag(item, 'title')),
-      link: decodeEntities(tag(item, 'link')),
-      guid: tag(item, 'guid'),
-      text: htmlToText(tag(item, 'description')),
-      publishedAt: Number.isFinite(pubDate) ? pubDate : null
-    };
-  });
+function componentSeverity(status) {
+  if (!Object.hasOwn(COMPONENT_STATUS, status)) invalid('unknown component status');
+  return COMPONENT_STATUS[status];
 }
 
-function incidentKey(update) {
-  // guid is "/<incidentId>/<updateId>"
-  return update.link || update.guid.split('/').filter(Boolean)[0] || update.title;
+/** StatusCast's zone-less dates are UTC, as displayed on Fastly's status page. */
+function timestamp(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(value)) invalid('invalid timestamp');
+  const zoned = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`;
+  const ms = Date.parse(zoned);
+  if (!Number.isFinite(ms)) invalid('invalid timestamp');
+  return ms;
 }
 
-export function isResolved(update) {
-  return /^retrospective/i.test(update.title) || RESOLVED_TEXT.test(update.text);
+function latestPost(posts, now) {
+  if (!Array.isArray(posts)) invalid('missing incident posts');
+  return posts
+    .filter(post => {
+      if (!post || typeof post.IsPublished !== 'boolean') invalid('invalid incident post');
+      return post.IsPublished;
+    })
+    .map(post => ({ post, time: timestamp(post.Date) }))
+    .filter(({ time }) => time <= now)
+    .sort((a, b) => b.time - a.time || (b.post.Id ?? 0) - (a.post.Id ?? 0))[0];
 }
 
-export function classifySeverity(title) {
-  if (/maintenance/i.test(title)) return 'maint';
-  if (/outage|unavailable|\bdown\b/i.test(title)) return 'major';
-  return 'minor';
+function incidentItem(incident, now) {
+  if (!incident || typeof incident.Title !== 'string' || !incident.Title.trim()) invalid('missing incident title');
+  if (!['InProgress', 'Closed', 'Future'].includes(incident.Status)) invalid('unknown incident status');
+  if (incident.Status !== 'InProgress') return null;
+  const started = timestamp(incident.StartDate);
+  if (started > now || (incident.EndDate && timestamp(incident.EndDate) <= now)) return null;
+  const latest = latestPost(incident.Posts, now);
+  if (latest?.post.PostType === 'Closed') return null;
+
+  if (!Object.hasOwn(INCIDENT_SEVERITY, incident.IncidentType)) invalid('unknown incident type');
+  const severity = latest?.post.NewComponentStatus == null
+    ? INCIDENT_SEVERITY[incident.IncidentType]
+    : componentSeverity(latest.post.NewComponentStatus);
+  if (latest?.post.Text != null && typeof latest.post.Text !== 'string') invalid('invalid post text');
+  const text = htmlToText(latest?.post.Text ?? '');
+  const label = POST_LABEL[latest?.post.PostType];
+  const detail = truncate(label ? `${label}${text ? ` · ${text}` : ''}` : text || DESCRIPTION[severity], 120);
+  return {
+    title: incident.Title.trim(),
+    detail,
+    severity,
+    updatedAt: new Date(latest?.time ?? started).toISOString()
+  };
 }
 
-function firstSentence(text) {
-  const match = text.match(/^.*?[.!?](?=\s|$)/);
-  return truncate(match ? match[0] : text, 120);
-}
-
-/** Latest update per incident, keeping only unresolved incidents inside the lookback window. */
-export function activeIncidents(updates, { now = Date.now(), lookbackMs = DEFAULT_LOOKBACK_MS } = {}) {
-  const latest = new Map();
-  for (const update of updates) {
-    if (update.publishedAt === null || update.publishedAt > now) continue; // skip announcements of future work
-    const key = incidentKey(update);
-    if (!latest.has(key) || latest.get(key).publishedAt < update.publishedAt) latest.set(key, update);
-  }
-
-  return [...latest.values()].filter(u => u.publishedAt >= now - lookbackMs && !isResolved(u));
-}
-
-export function parseStatusCastRss(xml, provider, options = {}) {
-  const items = activeIncidents(parseRssItems(xml), options)
-    .map(update => ({
-      title: update.title,
-      detail: firstSentence(update.text),
-      severity: classifySeverity(update.title),
-      updatedAt: new Date(update.publishedAt).toISOString()
-    }))
-    .sort(compareItems);
-
-  const status = items.reduce((worst, item) => (rank(item.severity) > rank(worst) ? item.severity : worst), 'ok');
-
+export function parseStatusCastSummary(data, provider, { now = Date.now() } = {}) {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.UnresolvedIncidents)
+      || !Array.isArray(data.UpcomingIncidents)) invalid('missing incident arrays');
+  const status = componentSeverity(data.Status);
+  if (data.StatusText != null && typeof data.StatusText !== 'string') invalid('invalid status text');
+  // The summary's active list is authoritative; no age cutoff or wording guesses.
+  // UpcomingIncidents is intentionally excluded from the current status display.
+  const items = data.UnresolvedIncidents.map(incident => incidentItem(incident, now))
+    .filter(Boolean).sort(compareItems);
   return {
     name: provider.name,
     url: provider.pageUrl,
     status,
-    description: STATUS_DESCRIPTION[status],
+    description: data.StatusText?.trim() || DESCRIPTION[status],
     items
   };
 }

@@ -1,78 +1,106 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseStatusCastRss } from '../src/sources/fastly.js';
+import { readFileSync } from 'node:fs';
+import { parseStatusCastSummary } from '../src/sources/fastly.js';
 
-const NOW = Date.parse('2026-11-02T18:00:00Z');
+const NOW = Date.parse('2026-11-03T17:00:00Z');
 const provider = { name: 'Fastly', pageUrl: 'https://www.fastlystatus.com' };
-const HOUR = 3600 * 1000;
+const fixture = JSON.parse(readFileSync(new URL('./fixtures/fastly-summary.json', import.meta.url)));
+const post = overrides => ({
+  Id: 1, Date: '2026-11-03T12:00:00', IsPublished: true,
+  PostType: 'Investigating', NewComponentStatus: 'DegradedPerformance',
+  Text: '<p>Engineers are investigating.</p>', ...overrides
+});
+const incident = overrides => ({
+  Id: 1, Title: 'Elevated errors', Status: 'InProgress', IncidentType: 'ServiceUnavailable',
+  StartDate: '2026-11-03T10:00:00', Posts: [post()], ...overrides
+});
+const summary = overrides => ({ Status: 'Available', StatusText: 'All Systems Operational', UnresolvedIncidents: [], UpcomingIncidents: [], ...overrides });
+const parse = data => parseStatusCastSummary(data, provider, { now: NOW });
 
-/** One RSS <item> per update; `html` mimics StatusCast's double-escaped descriptions. */
-function item({ incident, update, title, hoursAgo, html }) {
-  const date = new Date(NOW - hoursAgo * HOUR).toUTCString();
-  const escaped = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return `<item>
-    <title>${title}</title>
-    <description>${escaped}</description>
-    <link>https://www.fastlystatus.com/incident/${incident}</link>
-    <guid>/${incident}/${update}</guid>
-    <pubDate>${date}</pubDate>
-    <sc:customfields>[]</sc:customfields>
-  </item>`;
-}
-
-const feed = items => `<?xml version="1.0"?><rss version="2.0" xmlns:sc="http://statuscast.com"><channel>${items.join('')}</channel></rss>`;
-const parse = items => parseStatusCastRss(feed(items), provider, { now: NOW });
-
-test('reports operational when there are no active incidents', () => {
-  const result = parse([]);
-  assert.equal(result.status, 'ok');
-  assert.equal(result.description, 'All Systems Operational');
-  assert.deepEqual(result.items, []);
+test('maps page status independently of incident titles and preserves status text', () => {
+  for (const [status, expected] of Object.entries({ Available: 'ok', Unavailable: 'major', DegradedPerformance: 'minor', Maintenance: 'maint', Informational: 'info', Monitoring: 'minor' })) {
+    const result = parse(summary({ Status: status, StatusText: 'Provider description' }));
+    assert.equal(result.status, expected);
+    assert.equal(result.description, 'Provider description');
+  }
+  assert.deepEqual(parse(summary()).items, []);
 });
 
-test('uses only the latest update per incident, so a resolved incident disappears', () => {
-  const result = parse([
-    item({ incident: 1, update: 2, title: 'Kansas City (MCI) Rerouted Traffic', hoursAgo: 1, html: '<p>&#xA; This event has been resolved. &#xA;</p>' }),
-    item({ incident: 1, update: 1, title: 'Kansas City (MCI) Rerouted Traffic', hoursAgo: 3, html: '<p>We are rerouting traffic away from MCI.</p>' })
-  ]);
-  assert.deepEqual(result.items, []);
+test('real summary keeps all four active events, including September maintenance, and excludes upcoming work', () => {
+  // Projection of Fastly's live summary on 2026-11-03, retaining lifecycle fields.
+  const result = parse(fixture);
+  assert.equal(result.status, 'maint');
+  assert.equal(result.items.length, 4);
+  assert.equal(result.items[0].title, 'Changes to Fastly IP Address Space');
+  assert.equal(result.items[0].updatedAt, '2026-09-14T17:56:00.000Z');
+  assert.equal(result.items[0].severity, 'maint');
+  assert.ok(result.items.slice(1).every(item => item.severity === 'info'));
+  assert.ok(result.items.some(item => item.title.startsWith('Domainr:')));
+  assert.ok(result.items.every(item => !item.title.includes('Manchester')));
 });
 
-test('shows one item per ongoing incident with the latest update text', () => {
-  const result = parse([
-    item({ incident: 2, update: 1, title: 'Elevated Errors &amp; Latency for McAllen (MFE)', hoursAgo: 4, html: '<p>Investigating.</p>' }),
-    item({ incident: 2, update: 2, title: 'Elevated Errors &amp; Latency for McAllen (MFE)', hoursAgo: 2, html: '<span style="x">Engineers have identified the cause.</span> More soon.' })
-  ]);
-  assert.equal(result.items.length, 1);
-  assert.equal(result.items[0].title, 'Elevated Errors & Latency for McAllen (MFE)', 'decodes entities in titles');
-  assert.equal(result.items[0].detail, 'Engineers have identified the cause.');
-  assert.equal(result.items[0].updatedAt, new Date(NOW - 2 * HOUR).toISOString());
-  assert.equal(result.status, 'minor');
+test('uses latest published update, ignoring unpublished and future posts', () => {
+  const result = parse(summary({ UnresolvedIncidents: [incident({ Posts: [
+    post({ Id: 3, Date: '2026-11-03T14:00:00', NewComponentStatus: 'Informational', IsPublished: false }),
+    post({ Id: 4, Date: '2026-11-04T14:00:00', PostType: 'Closed', NewComponentStatus: 'Available' }),
+    post({ Id: 2, Date: '2026-11-03T13:00:00', PostType: 'Monitoring', NewComponentStatus: 'Monitoring', Text: '<p>Fix &amp; recovery.</p>' }),
+    post({ NewComponentStatus: 'Unavailable' })
+  ] })] }));
+  assert.equal(result.items[0].severity, 'minor');
+  assert.equal(result.items[0].updatedAt, '2026-11-03T13:00:00.000Z');
+  assert.equal(result.items[0].detail, 'Monitoring · Fix & recovery.');
 });
 
-test('keeps incidents ongoing for more than a day (regression: old 24h cutoff hid them)', () => {
-  const result = parse([item({ incident: 3, update: 1, title: 'Osaka (ITM) with Possible Impact', hoursAgo: 40, html: 'Investigating.' })]);
-  assert.equal(result.items.length, 1);
+test('excludes closed, ended and future events using structured lifecycle fields', () => {
+  const result = parse(summary({ UnresolvedIncidents: [
+    incident({ Status: 'Closed' }),
+    incident({ Status: 'Future' }),
+    incident({ EndDate: '2026-11-03T15:00:00' }),
+    incident({ StartDate: '2026-11-04T10:00:00' }),
+    incident({ Posts: [post({ PostType: 'Closed' })] }),
+    incident({ Title: 'Still monitoring', Posts: [post({ Text: 'During this incident, a subsystem has been resolved. Monitoring continues.', PostType: 'Monitoring' })] })
+  ] }));
+  assert.deepEqual(result.items.map(item => item.title), ['Still monitoring']);
 });
 
-test('drops incidents older than the 7 day lookback, future announcements and retrospectives', () => {
-  const result = parse([
-    item({ incident: 4, update: 1, title: 'Domainr lookup issue', hoursAgo: 8 * 24, html: 'Investigating.' }),
-    item({ incident: 5, update: 1, title: 'Upcoming change to geolocation values', hoursAgo: -24 * 30, html: 'On December 1...' }),
-    item({ incident: 6, update: 1, title: 'Retrospective: Impacted Performance in Mumbai', hoursAgo: 5, html: 'Summary of the event.' })
+test('classifies by component status instead of outage words, and sorts by severity then recency', () => {
+  const result = parse(summary({ UnresolvedIncidents: [
+    incident({ Title: 'Outage retrospective advisory', IncidentType: 'Informational', Posts: [post({ NewComponentStatus: 'Informational' })] }),
+    incident({ Title: 'Capacity work', IncidentType: 'ScheduledMaintenance', Posts: [post({ NewComponentStatus: 'Maintenance' })] }),
+    incident({ Title: 'Traffic rerouting', Posts: [post({ NewComponentStatus: 'Unavailable' })] }),
+    incident({ Title: 'Older degradation', Posts: [post()] }),
+    incident({ Title: 'Newer degradation', Posts: [post({ Date: '2026-11-03T13:00:00' })] })
+  ] }));
+  assert.deepEqual(result.items.map(item => [item.title, item.severity]), [
+    ['Traffic rerouting', 'major'], ['Newer degradation', 'minor'], ['Older degradation', 'minor'],
+    ['Capacity work', 'maint'], ['Outage retrospective advisory', 'info']
   ]);
-  assert.deepEqual(result.items, []);
 });
 
-test('classifies severity from the title and reports the worst one', () => {
-  const result = parse([
-    item({ incident: 7, update: 1, title: 'Hong Kong (HKG) Maintenance', hoursAgo: 1, html: 'Maintenance is in progress.' }),
-    item({ incident: 8, update: 1, title: 'Compute Outage', hoursAgo: 2, html: 'Investigating.' })
-  ]);
-  assert.deepEqual(result.items.map(i => [i.title, i.severity]), [
-    ['Compute Outage', 'major'],
-    ['Hong Kong (HKG) Maintenance', 'maint']
-  ]);
-  assert.equal(result.status, 'major');
-  assert.equal(result.description, 'Major Outage');
+test('falls back to structured incident type and start time when there are no published posts', () => {
+  const result = parse(summary({ UnresolvedIncidents: [incident({ IncidentType: 'ScheduledMaintenance', Posts: [] })] }));
+  assert.equal(result.items[0].severity, 'maint');
+  assert.equal(result.items[0].updatedAt, '2026-11-03T10:00:00.000Z');
+});
+
+test('interprets zone-less dates as UTC even outside UTC and respects explicit offsets', () => {
+  const previous = process.env.TZ;
+  process.env.TZ = 'America/Los_Angeles';
+  try {
+    const result = parse(summary({ UnresolvedIncidents: [incident({ Posts: [post({ Date: '2026-11-03T05:00:00-08:00' }), post()] })] }));
+    assert.equal(result.items[0].updatedAt, '2026-11-03T13:00:00.000Z');
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+});
+
+test('rejects malformed and unknown data instead of reporting operational', () => {
+  for (const data of [null, {}, '', '<html>error</html>', summary({ Status: 'Unexpected' }), summary({ UnresolvedIncidents: null }),
+    summary({ UnresolvedIncidents: [incident({ Status: 'Unexpected' })] }),
+    summary({ UnresolvedIncidents: [incident({ Posts: [post({ Date: 'invalid' })] })] }),
+    summary({ UnresolvedIncidents: [incident({ Posts: [post({ NewComponentStatus: 'Unexpected' })] })] })]) {
+    assert.throws(() => parse(data), /Invalid Fastly summary/);
+  }
 });

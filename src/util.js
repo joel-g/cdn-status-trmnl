@@ -29,7 +29,7 @@ export function decodeEntities(text = '') {
   });
 }
 
-/** Turns escaped HTML (as found in RSS descriptions) into plain single-line text. */
+/** Turns HTML or escaped HTML in provider descriptions into plain single-line text. */
 export function htmlToText(html = '') {
   const unescaped = decodeEntities(html.replace(/^<!\[CDATA\[|\]\]>$/g, ''));
   return decodeEntities(unescaped.replace(/<[^>]*>/g, ' ')).replace(/\s+/g, ' ').trim();

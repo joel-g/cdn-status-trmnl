@@ -2,7 +2,7 @@
 
 import { fetchWithTimeout } from '../util.js';
 import { parseStatuspageSummary } from './statuspage.js';
-import { parseStatusCastRss } from './fastly.js';
+import { FASTLY_USER_AGENT, parseStatusCastSummary } from './fastly.js';
 
 export const PROVIDERS = [
   {
@@ -19,9 +19,9 @@ export const PROVIDERS = [
   },
   {
     name: 'Fastly',
-    url: 'https://www.fastlystatus.com/rss',
+    url: 'https://www.fastlystatus.com/summary.json',
     pageUrl: 'https://www.fastlystatus.com',
-    type: 'statuscast-rss'
+    type: 'statuscast'
   }
 ];
 
@@ -31,8 +31,12 @@ async function fetchProvider(provider, now) {
       const response = await fetchWithTimeout(provider.url, { headers: { Accept: 'application/json' } });
       return parseStatuspageSummary(await response.json(), provider);
     }
-    const response = await fetchWithTimeout(provider.url, { headers: { Accept: 'application/rss+xml, application/xml' } });
-    return parseStatusCastRss(await response.text(), provider, { now: now.getTime() });
+    // Fastly currently rejects custom/absent user-agents on this public endpoint.
+    // Keep the verified browser user-agent limited to Fastly.
+    const response = await fetchWithTimeout(provider.url, {
+      headers: { Accept: 'application/json', 'User-Agent': FASTLY_USER_AGENT }
+    });
+    return parseStatusCastSummary(await response.json(), provider, { now: now.getTime() });
   } catch (error) {
     console.error(`${provider.name} fetch failed:`, error);
     return {

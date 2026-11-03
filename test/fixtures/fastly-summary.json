@@ -1,0 +1,88 @@
+{
+  "Status": "Maintenance",
+  "StatusText": "Maintenance",
+  "UnresolvedIncidents": [
+    {
+      "Id": 378937,
+      "Title": "Domainr: Some Top-level Domains (TLDs) may return an 'unknown' status",
+      "Status": "InProgress",
+      "IncidentType": "Informational",
+      "StartDate": "2026-10-23T02:20:00",
+      "Posts": [
+        {
+          "Id": 817565,
+          "Date": "2026-10-23T02:20:00",
+          "IsPublished": true,
+          "PostType": "Informational",
+          "NewComponentStatus": "Informational"
+        }
+      ]
+    },
+    {
+      "Id": 378926,
+      "Title": "Third-Party Vulnerability Disclosure \u2013 php2shell (CVE-2026-109618 & CVE-2026-109619)",
+      "Status": "InProgress",
+      "IncidentType": "Informational",
+      "StartDate": "2026-10-21T19:26:00",
+      "Posts": [
+        {
+          "Id": 817548,
+          "Date": "2026-10-21T19:26:00",
+          "IsPublished": true,
+          "PostType": "Informational",
+          "NewComponentStatus": "Informational"
+        }
+      ]
+    },
+    {
+      "Id": 378915,
+      "Title": "[Action Required] Compute services: Shielding migration from Milan (MXP) to Milan (BGY)",
+      "Status": "InProgress",
+      "IncidentType": "Informational",
+      "StartDate": "2026-10-20T01:18:00",
+      "Posts": [
+        {
+          "Id": 817529,
+          "Date": "2026-10-20T01:18:00",
+          "IsPublished": true,
+          "PostType": "Informational",
+          "NewComponentStatus": "Informational"
+        }
+      ]
+    },
+    {
+      "Id": 378836,
+      "Title": "Changes to Fastly IP Address Space",
+      "Status": "InProgress",
+      "IncidentType": "ScheduledMaintenance",
+      "StartDate": "2026-09-14T17:56:00",
+      "Posts": [
+        {
+          "Id": 817338,
+          "Date": "2026-09-14T17:56:00",
+          "IsPublished": true,
+          "PostType": "Informational",
+          "NewComponentStatus": "Maintenance"
+        }
+      ]
+    }
+  ],
+  "UpcomingIncidents": [
+    {
+      "Id": 378972,
+      "Title": "Data Center Capacity Expansion for Manchester (MAN) ",
+      "Status": "Future",
+      "IncidentType": "ScheduledMaintenance",
+      "StartDate": "2026-11-10T00:00:00",
+      "Posts": [
+        {
+          "Id": 817668,
+          "Date": "2026-11-10T00:00:00",
+          "IsPublished": true,
+          "PostType": "Informational",
+          "NewComponentStatus": "Maintenance"
+        }
+      ]
+    }
+  ]
+}
